@@ -1084,32 +1084,42 @@ async def send_alerts():
 
 # ============= ЗАПУСК =============
 
-def run_web():
-    """Запуск веб-сервера в отдельном потоке"""
-    uvicorn.run(app, host="0.0.0.0", port=Config.WEB_PORT, log_level="error")
+async def start_web_server():
+    """Запуск веб-сервера через asyncio"""
+    config = uvicorn.Config(
+        app,
+        host="0.0.0.0",
+        port=Config.WEB_PORT,
+        log_level="info",
+        access_log=True
+    )
+    server = uvicorn.Server(config)
+    await server.serve()
+
+async def start_telegram_bot():
+    """Запуск Telegram бота"""
+    logger.info("Starting Telegram bot...")
+    await db.init()
+    scheduler.add_job(monitor_all_servers, 'interval', seconds=Config.CHECK_INTERVAL)
+    scheduler.start()
+    logger.info(f"Scheduler started (interval: {Config.CHECK_INTERVAL}s)")
+    await dp.start_polling(bot)
 
 async def main():
     logger.info("=== SSH Agent Starting ===")
     logger.info(f"Bot token: {Config.BOT_TOKEN[:10]}...")
     logger.info(f"Admin IDs: {Config.ADMIN_IDS}")
     logger.info(f"Web port: {Config.WEB_PORT}")
+    logger.info(f"Web URL: https://sshagent.bothost.ru")
     
-    # Инициализация БД
-    await db.init()
-    
-    # Запуск планировщика
-    scheduler.add_job(monitor_all_servers, 'interval', seconds=Config.CHECK_INTERVAL)
-    scheduler.start()
-    logger.info(f"Scheduler started (interval: {Config.CHECK_INTERVAL}s)")
-    
-    # Запуск веб-сервера в отдельном потоке
-    web_thread = Thread(target=run_web, daemon=True)
-    web_thread.start()
-    logger.info(f"Web server started on port {Config.WEB_PORT}")
-    
-    # Запуск Telegram бота
-    logger.info("Starting Telegram bot...")
-    await dp.start_polling(bot)
+    # Запускаем оба сервиса параллельно
+    await asyncio.gather(
+        start_telegram_bot(),
+        start_web_server()
+    )
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Shutting down...")
