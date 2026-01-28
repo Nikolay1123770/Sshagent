@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Optional, Dict, List
 from pathlib import Path
 import json
+import signal
 
 # Telegram
 from aiogram import Bot, Dispatcher, F, Router
@@ -23,13 +24,14 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.client.default import DefaultBotProperties  # ИМПОРТ ДОБАВЛЕН
+from aiogram.client.default import DefaultBotProperties
 
 # Web
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse
 import uvicorn
 from threading import Thread
+import multiprocessing
 
 # Scheduler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -306,7 +308,7 @@ db = Database(Config.DB_PATH)
 ssh = SSHManager()
 scheduler = AsyncIOScheduler(timezone="UTC")
 
-# Telegram Bot - ИСПРАВЛЕННАЯ СТРОКА
+# Telegram Bot
 bot = Bot(token=Config.BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
 router = Router()
@@ -378,7 +380,7 @@ async def cmd_start(message: Message, state: FSMContext):
         await message.answer("❌ Доступ запрещен")
         return
     
-    web_url = f"http://{Config.WEB_HOST}:{Config.WEB_PORT}"
+    web_url = f"https://sshagent.bothost.ru"
     
     await message.answer(
         f"👋 Привет!\n\n"
@@ -642,7 +644,7 @@ async def show_stats(callback: CallbackQuery):
 
 @router.callback_query(F.data == "web")
 async def show_web_link(callback: CallbackQuery):
-    web_url = f"http://{Config.WEB_HOST}:{Config.WEB_PORT}"
+    web_url = f"https://sshagent.bothost.ru"
     text = f"🌐 <b>Web интерфейс</b>\n\n"
     text += f"URL: <code>{web_url}</code>\n\n"
     text += "Откройте в браузере для доступа к:\n"
@@ -1318,16 +1320,20 @@ async def send_alerts():
 # ============= ЗАПУСК =============
 
 def run_web():
-    """Запуск веб-сервера в отдельном потоке"""
-    uvicorn_config = uvicorn.Config(
-        app,
-        host=Config.WEB_HOST,
-        port=Config.WEB_PORT,
-        log_level="warning",
-        access_log=False
-    )
-    server = uvicorn.Server(uvicorn_config)
-    server.run()
+    """Запуск веб-сервера в отдельном процессе"""
+    logger.info(f"Starting web server on {Config.WEB_HOST}:{Config.WEB_PORT}")
+    
+    try:
+        uvicorn.run(
+            app,
+            host=Config.WEB_HOST,
+            port=Config.WEB_PORT,
+            log_level="warning",
+            access_log=False,
+            loop="asyncio"
+        )
+    except Exception as e:
+        logger.error(f"Web server error: {e}")
 
 async def main():
     logger.info("=== SSH Agent Starting ===")
@@ -1355,9 +1361,10 @@ async def main():
     # Запуск мониторинга сразу
     asyncio.create_task(monitor_all_servers())
     
-    # Запуск веб-сервера в отдельном потоке
-    web_thread = Thread(target=run_web, daemon=True)
-    web_thread.start()
+    # Запуск веб-сервера в отдельном процессе
+    from multiprocessing import Process
+    web_process = Process(target=run_web, daemon=True)
+    web_process.start()
     logger.info(f"Web server started on {Config.WEB_HOST}:{Config.WEB_PORT}")
     
     # Запуск Telegram бота
@@ -1368,11 +1375,16 @@ async def main():
         logger.info("Shutting down...")
     finally:
         scheduler.shutdown()
+        web_process.terminate()
         await bot.session.close()
 
 if __name__ == '__main__':
+    # Упрощенный запуск для Bothost
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
     try:
-        asyncio.run(main())
+        loop.run_until_complete(main())
     except KeyboardInterrupt:
         logger.info("Agent stopped by user")
     except Exception as e:
