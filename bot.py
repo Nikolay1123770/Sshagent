@@ -23,6 +23,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.client.default import DefaultBotProperties  # ИМПОРТ ДОБАВЛЕН
 
 # Web
 from fastapi import FastAPI, Request, HTTPException
@@ -305,8 +306,8 @@ db = Database(Config.DB_PATH)
 ssh = SSHManager()
 scheduler = AsyncIOScheduler(timezone="UTC")
 
-# Telegram Bot
-bot = Bot(token=Config.BOT_TOKEN, parse_mode="HTML")
+# Telegram Bot - ИСПРАВЛЕННАЯ СТРОКА
+bot = Bot(token=Config.BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
 router = Router()
 dp.include_router(router)
