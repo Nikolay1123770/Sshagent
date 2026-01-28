@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 SSH Server Monitoring Agent
-Telegram Bot + Web Interface in one file
-For Bothost deployment
+Telegram Bot + Web Interface - Optimized for Bothost
 """
 
 import os
@@ -25,11 +24,10 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # Web
-from fastapi import FastAPI, WebSocket, Request, Depends, HTTPException, UploadFile, File
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from starlette.websockets import WebSocketDisconnect
+from fastapi import FastAPI, Request, HTTPException, UploadFile, File
+from fastapi.responses import HTMLResponse, StreamingResponse
 import uvicorn
+from threading import Thread
 
 # Scheduler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -49,8 +47,6 @@ class Config:
     
     # Web
     WEB_PORT = int(os.getenv('PORT', '8000'))
-    WEB_USERNAME = os.getenv('WEB_USERNAME', 'admin')
-    WEB_PASSWORD = os.getenv('WEB_PASSWORD', 'admin123')
     
     # Database
     DB_PATH = os.getenv('DB_PATH', '/app/data/agent.db')
@@ -283,11 +279,10 @@ router = Router()
 dp.include_router(router)
 
 # FastAPI Web
-app = FastAPI(title="SSH Agent Web")
-security = HTTPBasic()
+app = FastAPI(title="SSH Agent", docs_url=None, redoc_url=None)
 
 
-# ============= TELEGRAM BOT =============
+# ============= TELEGRAM BOT (код остается тот же) =============
 
 class AddServer(StatesGroup):
     name = State()
@@ -348,10 +343,14 @@ async def cmd_start(message: Message, state: FSMContext):
     if message.from_user.id not in Config.ADMIN_IDS:
         await message.answer("❌ Доступ запрещен")
         return
+    
+    web_url = f"https://sshagent.bothost.ru"
+    
     await message.answer(
         f"👋 Привет!\n\n"
         "🖥 SSH Server Agent\n"
-        "📱 Telegram + 🌐 Web интерфейс",
+        "📱 Telegram + 🌐 Web интерфейс\n\n"
+        f"🌐 Web: {web_url}",
         reply_markup=main_kb()
     )
 
@@ -577,25 +576,18 @@ async def show_stats(callback: CallbackQuery):
 
 @router.callback_query(F.data == "web")
 async def show_web_link(callback: CallbackQuery):
-    # Bothost предоставляет URL
-    web_url = os.getenv('WEB_URL', 'http://localhost:8000')
+    web_url = "https://sshagent.bothost.ru"
     text = f"🌐 <b>Web интерфейс</b>\n\n"
     text += f"URL: <code>{web_url}</code>\n\n"
-    text += f"👤 Username: <code>{Config.WEB_USERNAME}</code>\n"
-    text += f"🔑 Password: <code>{Config.WEB_PASSWORD}</code>\n\n"
-    text += "Откройте в браузере для доступа к терминалу и файловому менеджеру"
+    text += "Откройте в браузере для доступа к:\n"
+    text += "• Dashboard с метриками\n"
+    text += "• Терминал для команд\n"
+    text += "• Файловый менеджер\n"
     await callback.message.edit_text(text, reply_markup=main_kb(), parse_mode="HTML")
     await callback.answer()
 
 
-# ============= WEB INTERFACE =============
-
-def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
-    if credentials.username != Config.WEB_USERNAME or credentials.password != Config.WEB_PASSWORD:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    return credentials.username
-
-# HTML Templates (встроенные)
+# ============= WEB INTERFACE (УПРОЩЕННЫЙ БЕЗ AUTH) =============
 
 HTML_STYLE = """
 <style>
@@ -611,8 +603,7 @@ body {
     padding: 1rem 2rem;
     box-shadow: 0 2px 10px rgba(0,0,0,0.1);
 }
-.navbar h1 { font-size: 1.5rem; display: inline-block; }
-.navbar a { color: white; text-decoration: none; margin-left: 1rem; }
+.navbar h1 { font-size: 1.5rem; }
 .container { max-width: 1200px; margin: 2rem auto; padding: 0 1rem; }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
 .stat-card {
@@ -650,8 +641,6 @@ body {
     height: 100%;
     transition: width 0.3s;
 }
-.metric-fill.warning { background: #f59e0b; }
-.metric-fill.critical { background: #ef4444; }
 .btn {
     display: inline-block;
     padding: 0.5rem 1rem;
@@ -662,110 +651,15 @@ body {
     border: none;
     cursor: pointer;
     margin: 0.25rem;
-    transition: background 0.3s;
 }
 .btn:hover { background: #5568d3; }
 .btn-secondary { background: #6b7280; }
-.btn-secondary:hover { background: #4b5563; }
-.terminal-container {
-    background: #1e1e1e;
-    border-radius: 10px;
-    overflow: hidden;
-    margin: 2rem auto;
-    max-width: 1200px;
-}
-.terminal-header {
-    background: #2d2d2d;
-    padding: 0.75rem 1rem;
-    color: #ccc;
-    display: flex;
-    justify-content: space-between;
-}
-#terminal {
-    padding: 1rem;
-    height: 600px;
-    overflow-y: auto;
-    font-family: 'Courier New', monospace;
-    font-size: 14px;
-}
-.terminal-output { color: #0f0; white-space: pre-wrap; word-wrap: break-word; }
-.terminal-input {
-    width: 100%;
-    background: transparent;
-    border: none;
-    color: #0f0;
-    font-family: 'Courier New', monospace;
-    font-size: 14px;
-    outline: none;
-}
-.file-manager { background: white; border-radius: 10px; padding: 1.5rem; }
-.toolbar {
-    display: flex;
-    justify-content: space-between;
-    margin-bottom: 1rem;
-    flex-wrap: wrap;
-    gap: 1rem;
-}
-.path-bar {
-    display: flex;
-    gap: 0.5rem;
-    flex: 1;
-}
-.path-bar input {
-    flex: 1;
-    padding: 0.5rem;
-    border: 1px solid #ddd;
-    border-radius: 5px;
-}
-.files-table {
-    width: 100%;
-    border-collapse: collapse;
-}
-.files-table th {
-    background: #f9fafb;
-    padding: 0.75rem;
-    text-align: left;
-    border-bottom: 2px solid #e5e7eb;
-}
-.files-table td {
-    padding: 0.75rem;
-    border-bottom: 1px solid #e5e7eb;
-}
-.files-table tr:hover { background: #f9fafb; }
-.file-icon { margin-right: 0.5rem; color: #667eea; }
-.folder-icon { color: #f59e0b; }
-.modal {
-    display: none;
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: rgba(0,0,0,0.5);
-    z-index: 1000;
-}
-.modal.active { display: flex; align-items: center; justify-content: center; }
-.modal-content {
-    background: white;
-    padding: 2rem;
-    border-radius: 10px;
-    max-width: 90%;
-    max-height: 90%;
-    overflow: auto;
-}
-.modal-content textarea {
-    width: 100%;
-    min-height: 400px;
-    font-family: 'Courier New', monospace;
-    padding: 1rem;
-    border: 1px solid #ddd;
-    border-radius: 5px;
-}
+textarea { width: 100%; min-height: 400px; font-family: monospace; padding: 1rem; }
 </style>
 """
 
 @app.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request, username: str = Depends(verify_credentials)):
+async def dashboard():
     servers = await db.get_servers()
     stats = {'total': len(servers), 'online': 0, 'warning': 0, 'offline': 0}
     
@@ -805,9 +699,6 @@ async def dashboard(request: Request, username: str = Depends(verify_credentials
                         <div class="metric-fill" style="width: {m['disk_usage']}%"></div>
                     </div>
                 </div>
-                <div style="color: #666; font-size: 0.85rem; margin-top: 0.5rem;">
-                    Load: {m['load_avg']} | {m['timestamp'][:16]}
-                </div>
             </div>
             """
         else:
@@ -830,18 +721,14 @@ async def dashboard(request: Request, username: str = Depends(verify_credentials
     <!DOCTYPE html>
     <html>
     <head>
-        <title>SSH Agent Dashboard</title>
+        <title>SSH Agent</title>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         {HTML_STYLE}
     </head>
     <body>
         <div class="navbar">
-            <h1>🖥 SSH Agent Dashboard</h1>
-            <span style="float: right;">
-                <a href="/">Home</a>
-                <a href="#" onclick="location.reload()">Refresh</a>
-            </span>
+            <h1>🖥 SSH Agent</h1>
         </div>
         
         <div class="container">
@@ -866,12 +753,12 @@ async def dashboard(request: Request, username: str = Depends(verify_credentials
             
             <h2>Servers</h2>
             <div class="servers">
-                {servers_html}
+                {servers_html if servers_html else '<p>No servers yet. Add via Telegram bot!</p>'}
             </div>
         </div>
         
         <script>
-            setTimeout(() => location.reload(), 60000); // Auto-refresh каждую минуту
+            setTimeout(() => location.reload(), 60000);
         </script>
     </body>
     </html>
@@ -879,117 +766,74 @@ async def dashboard(request: Request, username: str = Depends(verify_credentials
     return html
 
 @app.get("/terminal/{server_id}", response_class=HTMLResponse)
-async def terminal_page(server_id: int, username: str = Depends(verify_credentials)):
+async def terminal_page(server_id: int):
     server = await db.get_server(server_id)
     if not server:
-        raise HTTPException(404, "Server not found")
+        raise HTTPException(404)
     
     html = f"""
     <!DOCTYPE html>
     <html>
     <head>
         <title>Terminal - {server['name']}</title>
-        <meta charset="utf-8">
         {HTML_STYLE}
     </head>
     <body>
         <div class="navbar">
             <h1>💻 Terminal: {server['name']}</h1>
-            <span style="float: right;">
-                <a href="/">Dashboard</a>
-                <a href="/files/{server_id}">Files</a>
-            </span>
         </div>
         
         <div class="container">
-            <div class="terminal-container">
-                <div class="terminal-header">
-                    <span id="status">⚪ Disconnected</span>
-                    <span>{server['username']}@{server['host']}:{server['port']}</span>
-                </div>
-                <div id="terminal">
-                    <div class="terminal-output" id="output"></div>
-                    <div style="display: flex;">
-                        <span style="color: #0f0;">$ </span>
-                        <input type="text" class="terminal-input" id="input" autocomplete="off">
-                    </div>
+            <div style="background: #1e1e1e; color: #0f0; padding: 1rem; border-radius: 10px; min-height: 400px; font-family: monospace;">
+                <div id="output"></div>
+                <div>
+                    <span>$ </span>
+                    <input type="text" id="input" style="background: transparent; border: none; color: #0f0; font-family: monospace; width: 80%;" autocomplete="off">
                 </div>
             </div>
             
-            <div style="margin-top: 1rem; background: white; padding: 1rem; border-radius: 10px;">
-                <h3>Quick Commands</h3>
-                <button class="btn" onclick="runCommand('df -h')">Disk Usage</button>
-                <button class="btn" onclick="runCommand('free -m')">Memory</button>
-                <button class="btn" onclick="runCommand('top -bn1 | head -20')">Top Processes</button>
-                <button class="btn" onclick="runCommand('uptime')">Uptime</button>
-                <button class="btn btn-secondary" onclick="clearTerminal()">Clear</button>
+            <div style="margin-top: 1rem;">
+                <button class="btn" onclick="runCmd('df -h')">Disk</button>
+                <button class="btn" onclick="runCmd('free -m')">Memory</button>
+                <button class="btn" onclick="runCmd('uptime')">Uptime</button>
+                <button class="btn btn-secondary" onclick="document.getElementById('output').innerHTML=''">Clear</button>
             </div>
         </div>
         
         <script>
-            const serverId = {server_id};
             const output = document.getElementById('output');
             const input = document.getElementById('input');
-            const status = document.getElementById('status');
             
-            input.focus();
-            
-            async function runCommand(cmd) {{
+            async function runCmd(cmd) {{
                 input.value = cmd;
-                await executeCommand();
+                await exec();
             }}
             
-            async function executeCommand() {{
-                const command = input.value.trim();
-                if (!command) return;
+            async function exec() {{
+                const cmd = input.value.trim();
+                if (!cmd) return;
                 
-                output.innerHTML += `<div style="color: #00ff00;">$ ${{command}}</div>`;
+                output.innerHTML += `<div>$ ${{cmd}}</div>`;
                 input.value = '';
-                status.textContent = '🔄 Executing...';
                 
                 try {{
-                    const response = await fetch(`/api/exec/${{serverId}}`, {{
+                    const res = await fetch('/api/exec/{server_id}', {{
                         method: 'POST',
                         headers: {{'Content-Type': 'application/json'}},
-                        body: JSON.stringify({{command}})
+                        body: JSON.stringify({{command: cmd}})
                     }});
-                    
-                    const data = await response.json();
-                    
-                    if (data.stdout) {{
-                        output.innerHTML += `<div style="color: #ccc;">${{escapeHtml(data.stdout)}}</div>`;
-                    }}
-                    if (data.stderr) {{
-                        output.innerHTML += `<div style="color: #ff5555;">${{escapeHtml(data.stderr)}}</div>`;
-                    }}
-                    
-                    status.textContent = `✅ Exit: ${{data.exit_code}}`;
+                    const data = await res.json();
+                    if (data.stdout) output.innerHTML += `<div>${{data.stdout.replace(/</g, '&lt;')}}</div>`;
+                    if (data.stderr) output.innerHTML += `<div style="color: red;">${{data.stderr}}</div>`;
                 }} catch (e) {{
-                    output.innerHTML += `<div style="color: #ff5555;">Error: ${{e.message}}</div>`;
-                    status.textContent = '❌ Error';
+                    output.innerHTML += `<div style="color: red;">Error: ${{e}}</div>`;
                 }}
-                
-                document.getElementById('terminal').scrollTop = document.getElementById('terminal').scrollHeight;
-                setTimeout(() => {{ status.textContent = '🟢 Ready'; }}, 2000);
             }}
             
-            function clearTerminal() {{
-                output.innerHTML = '';
-            }}
-            
-            function escapeHtml(text) {{
-                const div = document.createElement('div');
-                div.textContent = text;
-                return div.innerHTML;
-            }}
-            
-            input.addEventListener('keydown', (e) => {{
-                if (e.key === 'Enter') {{
-                    executeCommand();
-                }}
+            input.addEventListener('keydown', e => {{
+                if (e.key === 'Enter') exec();
             }});
-            
-            status.textContent = '🟢 Ready';
+            input.focus();
         </script>
     </body>
     </html>
@@ -997,263 +841,165 @@ async def terminal_page(server_id: int, username: str = Depends(verify_credentia
     return html
 
 @app.get("/files/{server_id}", response_class=HTMLResponse)
-async def files_page(server_id: int, username: str = Depends(verify_credentials)):
+async def files_page(server_id: int):
     server = await db.get_server(server_id)
     if not server:
-        raise HTTPException(404, "Server not found")
+        raise HTTPException(404)
     
     html = f"""
     <!DOCTYPE html>
     <html>
     <head>
         <title>Files - {server['name']}</title>
-        <meta charset="utf-8">
         {HTML_STYLE}
     </head>
     <body>
         <div class="navbar">
             <h1>📁 Files: {server['name']}</h1>
-            <span style="float: right;">
-                <a href="/">Dashboard</a>
-                <a href="/terminal/{server_id}">Terminal</a>
-            </span>
         </div>
         
         <div class="container">
-            <div class="file-manager">
-                <div class="toolbar">
-                    <div class="path-bar">
-                        <button class="btn" onclick="navigate('/')">Home</button>
-                        <button class="btn" onclick="goUp()">Up</button>
-                        <input type="text" id="current-path" value="/" readonly>
-                        <button class="btn" onclick="loadFiles()">Refresh</button>
-                    </div>
-                    <div>
-                        <button class="btn" onclick="createFolder()">New Folder</button>
-                        <button class="btn" onclick="document.getElementById('upload-input').click()">Upload</button>
-                        <input type="file" id="upload-input" style="display: none" multiple onchange="uploadFiles()">
-                    </div>
+            <div style="background: white; padding: 1.5rem; border-radius: 10px;">
+                <div style="margin-bottom: 1rem;">
+                    <button class="btn" onclick="load('/')">Home</button>
+                    <button class="btn" onclick="goUp()">Up</button>
+                    <input type="text" id="path" value="/" readonly style="width: 50%; padding: 0.5rem;">
+                    <button class="btn" onclick="load(document.getElementById('path').value)">Refresh</button>
                 </div>
                 
-                <table class="files-table">
+                <table style="width: 100%; border-collapse: collapse;">
                     <thead>
-                        <tr>
-                            <th>Name</th>
-                            <th>Size</th>
-                            <th>Modified</th>
-                            <th>Permissions</th>
-                            <th>Actions</th>
+                        <tr style="background: #f5f5f5;">
+                            <th style="padding: 0.75rem; text-align: left;">Name</th>
+                            <th style="padding: 0.75rem; text-align: left;">Size</th>
+                            <th style="padding: 0.75rem; text-align: left;">Modified</th>
                         </tr>
                     </thead>
-                    <tbody id="files-body">
-                        <tr><td colspan="5" style="text-align: center; padding: 2rem;">Loading...</td></tr>
+                    <tbody id="files">
+                        <tr><td colspan="3" style="padding: 2rem; text-align: center;">Loading...</td></tr>
                     </tbody>
                 </table>
             </div>
-        </div>
-        
-        <div id="editor-modal" class="modal">
-            <div class="modal-content">
-                <h3 id="editor-title">Edit File</h3>
-                <textarea id="editor-content"></textarea>
-                <div style="margin-top: 1rem;">
-                    <button class="btn" onclick="saveFile()">Save</button>
-                    <button class="btn btn-secondary" onclick="closeEditor()">Cancel</button>
+            
+            <div id="editor" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000;">
+                <div style="background: white; margin: 5% auto; padding: 2rem; max-width: 90%; max-height: 90%; overflow: auto; border-radius: 10px;">
+                    <h3 id="filename">Edit File</h3>
+                    <textarea id="content"></textarea>
+                    <div style="margin-top: 1rem;">
+                        <button class="btn" onclick="save()">Save</button>
+                        <button class="btn btn-secondary" onclick="closeEditor()">Cancel</button>
+                    </div>
                 </div>
             </div>
         </div>
         
         <script>
-            const serverId = {server_id};
             let currentPath = '/';
             let editingFile = null;
             
-            async function loadFiles(path = currentPath) {{
+            async function load(path) {{
                 currentPath = path;
-                document.getElementById('current-path').value = currentPath;
-                
-                const tbody = document.getElementById('files-body');
-                tbody.innerHTML = '<tr><td colspan="5" style="text-align: center;">Loading...</td></tr>';
+                document.getElementById('path').value = path;
                 
                 try {{
-                    const response = await fetch(`/api/files/${{serverId}}/list?path=${{encodeURIComponent(currentPath)}}`);
-                    const data = await response.json();
+                    const res = await fetch('/api/files/{server_id}/list?path=' + encodeURIComponent(path));
+                    const data = await res.json();
                     
+                    const tbody = document.getElementById('files');
                     if (!data.files || data.files.length === 0) {{
-                        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #666;">Empty directory</td></tr>';
+                        tbody.innerHTML = '<tr><td colspan="3" style="padding: 2rem; text-align: center; color: #666;">Empty</td></tr>';
                         return;
                     }}
                     
-                    tbody.innerHTML = data.files.map(file => `
-                        <tr>
-                            <td>
-                                <span class="${{file.is_dir ? 'folder-icon' : 'file-icon'}}">
-                                    ${{file.is_dir ? '📁' : '📄'}}
-                                </span>
-                                <a href="#" onclick="${{file.is_dir ? `navigate('${{file.path}}')` : `viewFile('${{file.path}}')`}}; return false;">
-                                    ${{file.name}}
+                    tbody.innerHTML = data.files.map(f => `
+                        <tr style="border-bottom: 1px solid #eee;">
+                            <td style="padding: 0.75rem;">
+                                <a href="#" onclick="${{f.is_dir ? `load('${{f.path}}')` : `edit('${{f.path}}')`}}; return false;">
+                                    ${{f.is_dir ? '📁' : '📄'}} ${{f.name}}
                                 </a>
                             </td>
-                            <td>${{file.size}}</td>
-                            <td>${{file.date}}</td>
-                            <td>${{file.permissions}}</td>
-                            <td>
-                                ${{!file.is_dir ? `<button class="btn btn-secondary" style="padding: 0.25rem 0.5rem;" onclick="editFile('${{file.path}}')">Edit</button>` : ''}}
-                                <button class="btn btn-secondary" style="padding: 0.25rem 0.5rem;" onclick="downloadFile('${{file.path}}', '${{file.name}}')">Download</button>
-                                <button class="btn btn-secondary" style="padding: 0.25rem 0.5rem;" onclick="deleteFile('${{file.path}}', '${{file.name}}')">Delete</button>
-                            </td>
+                            <td style="padding: 0.75rem;">${{f.size}}</td>
+                            <td style="padding: 0.75rem;">${{f.date}}</td>
                         </tr>
                     `).join('');
                 }} catch (e) {{
-                    tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: red;">Error: ${{e.message}}</td></tr>`;
+                    document.getElementById('files').innerHTML = `<tr><td colspan="3" style="color: red; padding: 1rem;">Error: ${{e}}</td></tr>`;
                 }}
-            }}
-            
-            function navigate(path) {{
-                loadFiles(path);
             }}
             
             function goUp() {{
                 const parts = currentPath.split('/').filter(p => p);
                 parts.pop();
-                navigate('/' + parts.join('/'));
+                load('/' + parts.join('/'));
             }}
             
-            async function editFile(path) {{
+            async function edit(path) {{
                 editingFile = path;
-                document.getElementById('editor-title').textContent = 'Edit: ' + path.split('/').pop();
+                document.getElementById('filename').textContent = 'Edit: ' + path.split('/').pop();
                 
                 try {{
-                    const response = await fetch(`/api/files/${{serverId}}/read?path=${{encodeURIComponent(path)}}`);
-                    const data = await response.json();
-                    document.getElementById('editor-content').value = data.content;
-                    document.getElementById('editor-modal').classList.add('active');
+                    const res = await fetch('/api/files/{server_id}/read?path=' + encodeURIComponent(path));
+                    const data = await res.json();
+                    document.getElementById('content').value = data.content;
+                    document.getElementById('editor').style.display = 'block';
                 }} catch (e) {{
-                    alert('Error: ' + e.message);
+                    alert('Error: ' + e);
                 }}
             }}
             
-            function viewFile(path) {{
-                editFile(path);
-            }}
-            
-            async function saveFile() {{
+            async function save() {{
                 if (!editingFile) return;
                 
-                const content = document.getElementById('editor-content').value;
-                
                 try {{
-                    await fetch(`/api/files/${{serverId}}/write`, {{
+                    await fetch('/api/files/{server_id}/write', {{
                         method: 'POST',
                         headers: {{'Content-Type': 'application/json'}},
-                        body: JSON.stringify({{path: editingFile, content}})
+                        body: JSON.stringify({{
+                            path: editingFile,
+                            content: document.getElementById('content').value
+                        }})
                     }});
-                    
-                    alert('File saved!');
+                    alert('Saved!');
                     closeEditor();
                 }} catch (e) {{
-                    alert('Error: ' + e.message);
+                    alert('Error: ' + e);
                 }}
             }}
             
             function closeEditor() {{
-                document.getElementById('editor-modal').classList.remove('active');
+                document.getElementById('editor').style.display = 'none';
                 editingFile = null;
             }}
             
-            async function downloadFile(path, name) {{
-                window.open(`/api/files/${{serverId}}/download?path=${{encodeURIComponent(path)}}`, '_blank');
-            }}
-            
-            async function deleteFile(path, name) {{
-                if (!confirm(`Delete ${{name}}?`)) return;
-                
-                try {{
-                    await fetch(`/api/files/${{serverId}}/delete?path=${{encodeURIComponent(path)}}`, {{
-                        method: 'DELETE'
-                    }});
-                    alert('Deleted!');
-                    loadFiles();
-                }} catch (e) {{
-                    alert('Error: ' + e.message);
-                }}
-            }}
-            
-            async function createFolder() {{
-                const name = prompt('Folder name:');
-                if (!name) return;
-                
-                const path = currentPath.endsWith('/') ? currentPath + name : currentPath + '/' + name;
-                
-                try {{
-                    await fetch(`/api/files/${{serverId}}/mkdir`, {{
-                        method: 'POST',
-                        headers: {{'Content-Type': 'application/json'}},
-                        body: JSON.stringify({{path}})
-                    }});
-                    loadFiles();
-                }} catch (e) {{
-                    alert('Error: ' + e.message);
-                }}
-            }}
-            
-            async function uploadFiles() {{
-                const files = document.getElementById('upload-input').files;
-                if (!files.length) return;
-                
-                for (const file of files) {{
-                    const formData = new FormData();
-                    formData.append('file', file);
-                    
-                    try {{
-                        await fetch(`/api/files/${{serverId}}/upload?path=${{encodeURIComponent(currentPath)}}`, {{
-                            method: 'POST',
-                            body: formData
-                        }});
-                    }} catch (e) {{
-                        alert('Error uploading ' + file.name + ': ' + e.message);
-                    }}
-                }}
-                
-                alert('Upload complete!');
-                loadFiles();
-            }}
-            
-            // Close modal on background click
-            document.getElementById('editor-modal').addEventListener('click', (e) => {{
-                if (e.target.id === 'editor-modal') closeEditor();
-            }});
-            
-            // Initial load
-            loadFiles();
+            load('/');
         </script>
     </body>
     </html>
     """
     return html
 
-# API Endpoints
+# API
 
 @app.post("/api/exec/{server_id}")
-async def exec_command_api(server_id: int, request: Request, username: str = Depends(verify_credentials)):
+async def exec_api(server_id: int, request: Request):
     server = await db.get_server(server_id)
     if not server:
-        raise HTTPException(404, "Server not found")
+        raise HTTPException(404)
     data = await request.json()
     stdout, stderr, code = await ssh.execute(server, data['command'])
     return {'stdout': stdout, 'stderr': stderr, 'exit_code': code}
 
 @app.get("/api/files/{server_id}/list")
-async def list_files(server_id: int, path: str = "/", username: str = Depends(verify_credentials)):
+async def list_files_api(server_id: int, path: str = "/"):
     server = await db.get_server(server_id)
     if not server:
-        raise HTTPException(404, "Server not found")
+        raise HTTPException(404)
     
     cmd = f"ls -lAh --time-style=long-iso '{path}' 2>/dev/null || ls -lAh '{path}'"
     stdout, stderr, code = await ssh.execute(server, cmd)
     
     if code != 0:
-        raise HTTPException(400, stderr or "Failed to list directory")
+        raise HTTPException(400, stderr)
     
     files = []
     for line in stdout.strip().split('\n')[1:]:
@@ -1274,7 +1020,7 @@ async def list_files(server_id: int, path: str = "/", username: str = Depends(ve
     return {'path': path, 'files': files}
 
 @app.get("/api/files/{server_id}/read")
-async def read_file(server_id: int, path: str, username: str = Depends(verify_credentials)):
+async def read_file_api(server_id: int, path: str):
     server = await db.get_server(server_id)
     if not server:
         raise HTTPException(404)
@@ -1284,7 +1030,7 @@ async def read_file(server_id: int, path: str, username: str = Depends(verify_cr
     return {'content': stdout, 'path': path}
 
 @app.post("/api/files/{server_id}/write")
-async def write_file(server_id: int, request: Request, username: str = Depends(verify_credentials)):
+async def write_file_api(server_id: int, request: Request):
     server = await db.get_server(server_id)
     if not server:
         raise HTTPException(404)
@@ -1292,61 +1038,6 @@ async def write_file(server_id: int, request: Request, username: str = Depends(v
     content = data['content'].replace("'", "'\\''")
     cmd = f"echo -n '{content}' > '{data['path']}'"
     _, stderr, code = await ssh.execute(server, cmd)
-    if code != 0:
-        raise HTTPException(400, stderr)
-    return {'success': True}
-
-@app.get("/api/files/{server_id}/download")
-async def download_file(server_id: int, path: str, username: str = Depends(verify_credentials)):
-    server = await db.get_server(server_id)
-    if not server:
-        raise HTTPException(404)
-    stdout, _, code = await ssh.execute(server, f"cat '{path}' | base64", timeout=120)
-    if code != 0:
-        raise HTTPException(400)
-    content = base64.b64decode(stdout.strip())
-    return StreamingResponse(
-        iter([content]),
-        media_type='application/octet-stream',
-        headers={'Content-Disposition': f'attachment; filename="{Path(path).name}"'}
-    )
-
-@app.post("/api/files/{server_id}/upload")
-async def upload_file(
-    server_id: int,
-    path: str,
-    file: UploadFile = File(...),
-    username: str = Depends(verify_credentials)
-):
-    server = await db.get_server(server_id)
-    if not server:
-        raise HTTPException(404)
-    content = await file.read()
-    content_b64 = base64.b64encode(content).decode()
-    target = f"{path.rstrip('/')}/{file.filename}"
-    cmd = f"echo '{content_b64}' | base64 -d > '{target}'"
-    _, stderr, code = await ssh.execute(server, cmd, timeout=120)
-    if code != 0:
-        raise HTTPException(400, stderr)
-    return {'success': True, 'path': target}
-
-@app.delete("/api/files/{server_id}/delete")
-async def delete_file(server_id: int, path: str, username: str = Depends(verify_credentials)):
-    server = await db.get_server(server_id)
-    if not server:
-        raise HTTPException(404)
-    _, stderr, code = await ssh.execute(server, f"rm -rf '{path}'")
-    if code != 0:
-        raise HTTPException(400, stderr)
-    return {'success': True}
-
-@app.post("/api/files/{server_id}/mkdir")
-async def create_directory(server_id: int, request: Request, username: str = Depends(verify_credentials)):
-    server = await db.get_server(server_id)
-    if not server:
-        raise HTTPException(404)
-    data = await request.json()
-    _, stderr, code = await ssh.execute(server, f"mkdir -p '{data['path']}'")
     if code != 0:
         raise HTTPException(400, stderr)
     return {'success': True}
@@ -1393,34 +1084,32 @@ async def send_alerts():
 
 # ============= ЗАПУСК =============
 
-async def start_bot():
-    """Запуск Telegram бота"""
-    logger.info("Starting Telegram bot...")
-    await db.init()
-    scheduler.add_job(monitor_all_servers, 'interval', seconds=Config.CHECK_INTERVAL)
-    scheduler.start()
-    await dp.start_polling(bot)
-
-async def start_web():
-    """Запуск Web сервера"""
-    logger.info(f"Starting web server on port {Config.WEB_PORT}...")
-    config = uvicorn.Config(app, host="0.0.0.0", port=Config.WEB_PORT, log_level="info")
-    server = uvicorn.Server(config)
-    await server.serve()
+def run_web():
+    """Запуск веб-сервера в отдельном потоке"""
+    uvicorn.run(app, host="0.0.0.0", port=Config.WEB_PORT, log_level="error")
 
 async def main():
-    """Главная функция - запускает бота и веб параллельно"""
     logger.info("=== SSH Agent Starting ===")
     logger.info(f"Bot token: {Config.BOT_TOKEN[:10]}...")
     logger.info(f"Admin IDs: {Config.ADMIN_IDS}")
     logger.info(f"Web port: {Config.WEB_PORT}")
-    logger.info(f"Web credentials: {Config.WEB_USERNAME} / {Config.WEB_PASSWORD}")
     
-    # Запускаем бота и веб параллельно
-    await asyncio.gather(
-        start_bot(),
-        start_web()
-    )
+    # Инициализация БД
+    await db.init()
+    
+    # Запуск планировщика
+    scheduler.add_job(monitor_all_servers, 'interval', seconds=Config.CHECK_INTERVAL)
+    scheduler.start()
+    logger.info(f"Scheduler started (interval: {Config.CHECK_INTERVAL}s)")
+    
+    # Запуск веб-сервера в отдельном потоке
+    web_thread = Thread(target=run_web, daemon=True)
+    web_thread.start()
+    logger.info(f"Web server started on port {Config.WEB_PORT}")
+    
+    # Запуск Telegram бота
+    logger.info("Starting Telegram bot...")
+    await dp.start_polling(bot)
 
 if __name__ == '__main__':
     asyncio.run(main())
